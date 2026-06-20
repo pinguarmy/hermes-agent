@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -188,6 +189,81 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_sanitizes_model_history(self, adapter):
+        raw_prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"old.txt"}',
+                        },
+                    }
+                ],
+                "provider_metadata": {"debug": "PRIVATE_REASONING"},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_old",
+                "content": "RAW_TOOL_OUTPUT old secret",
+            },
+            {"role": "assistant", "content": "old result"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(raw_prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+        captured = {}
+
+        def _run_conversation(user_message=None, conversation_history=None, task_id=None):
+            captured["user_message"] = user_message
+            captured["conversation_history"] = conversation_history
+            captured["task_id"] = task_id
+            return {"final_response": "done"}
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "Read new file", "previous_response_id": "resp_prev"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(20):
+                    if "conversation_history" in captured:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured["user_message"] == "Read new file"
+        assert captured["task_id"] == "api-test-session"
+        assert captured["conversation_history"] == [
+            {"role": "user", "content": "Read old file"},
+            {"role": "assistant", "content": "old result"},
+        ]
+        model_history_json = json.dumps(captured["conversation_history"])
+        assert "call_old" not in model_history_json
+        assert "RAW_TOOL_OUTPUT" not in model_history_json
+        assert "PRIVATE_REASONING" not in model_history_json
+        assert data["run_id"].startswith("run_")
 
 
 # ---------------------------------------------------------------------------

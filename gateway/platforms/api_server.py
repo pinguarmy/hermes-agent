@@ -2209,13 +2209,14 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_q,
         agent_task,
         agent_ref,
-        conversation_history: List[Dict[str, str]],
+        conversation_history: List[Dict[str, Any]],
         user_message: str,
         instructions: Optional[str],
         conversation: Optional[str],
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        storage_conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -2247,6 +2248,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         import queue as _q
 
+        storage_history = (
+            conversation_history
+            if storage_conversation_history is None
+            else storage_conversation_history
+        )
         sse_headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -2317,7 +2323,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not store:
                 return
             if conversation_history_snapshot is None:
-                conversation_history_snapshot = list(conversation_history)
+                conversation_history_snapshot = list(storage_history)
                 conversation_history_snapshot.append({"role": "user", "content": user_message})
             self._response_store.put(response_id, {
                 "response": response_env,
@@ -2353,7 +2359,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
             }
-            incomplete_history = list(conversation_history)
+            incomplete_history = list(storage_history)
             incomplete_history.append({"role": "user", "content": user_message})
             if incomplete_text:
                 incomplete_history.append({"role": "assistant", "content": incomplete_text})
@@ -2696,7 +2702,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
-                _failed_history = list(conversation_history)
+                _failed_history = list(storage_history)
                 _failed_history.append({"role": "user", "content": user_message})
                 if final_response_text or agent_error:
                     _failed_history.append({
@@ -2721,10 +2727,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 }
                 full_history = self._build_response_conversation_history(
-                    conversation_history,
+                    storage_history,
                     user_message,
                     result,
                     final_response_text,
+                    model_conversation_history=conversation_history,
                 )
                 _persist_response_snapshot(
                     completed_env,
@@ -2879,11 +2886,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
+        loaded_previous_response_history = False
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
+            loaded_previous_response_history = True
             stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
             if instructions is None:
@@ -2901,6 +2910,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
+
+        if loaded_previous_response_history:
+            from agent.resume_history import sanitize_resumed_conversation_history
+            model_conversation_history = sanitize_resumed_conversation_history(conversation_history)
+        else:
+            model_conversation_history = list(conversation_history)
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
@@ -2950,7 +2965,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
-                conversation_history=conversation_history,
+                conversation_history=model_conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
@@ -2976,19 +2991,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_q=_stream_q,
                 agent_task=agent_task,
                 agent_ref=agent_ref,
-                conversation_history=conversation_history,
+                conversation_history=model_conversation_history,
                 user_message=user_message,
                 instructions=instructions,
                 conversation=conversation,
                 store=store,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                storage_conversation_history=conversation_history,
             )
 
         async def _compute_response():
             return await self._run_agent(
                 user_message=user_message,
-                conversation_history=conversation_history,
+                conversation_history=model_conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
@@ -3032,13 +3048,14 @@ class APIServerAdapter(BasePlatformAdapter):
             user_message,
             result,
             final_response,
+            model_conversation_history=model_conversation_history,
         )
 
         # Build output items from the current turn only.  AIAgent returns a
         # full transcript in result["messages"], while older/mocked paths may
         # return only the current turn suffix.
         output_start_index = self._response_messages_turn_start_index(
-            conversation_history,
+            model_conversation_history,
             user_message,
             result,
         )
@@ -3353,20 +3370,26 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any,
         result: Dict[str, Any],
         final_response: Any,
+        model_conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Build the stored Responses transcript without duplicating history."""
         prior = list(conversation_history)
+        model_prior = (
+            list(conversation_history)
+            if model_conversation_history is None
+            else list(model_conversation_history)
+        )
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
 
         if isinstance(agent_messages, list) and agent_messages:
-            turn_start = APIServerAdapter._response_messages_turn_start_index(
-                conversation_history,
-                user_message,
-                result,
-            )
-            if turn_start:
-                return list(agent_messages)
+            expected_prefix = model_prior + [current_user]
+            if agent_messages[:len(expected_prefix)] == expected_prefix:
+                return prior + [current_user] + agent_messages[len(expected_prefix):]
+            if model_prior and agent_messages[:len(model_prior)] == model_prior:
+                return prior + agent_messages[len(model_prior):]
+            if agent_messages[:1] == [current_user]:
+                return prior + agent_messages
 
             full_history = prior
             full_history.append(current_user)
@@ -3684,10 +3707,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
+        loaded_previous_response_history = False
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
+                loaded_previous_response_history = True
                 stored_session_id = stored.get("session_id")
                 if instructions is None:
                     instructions = stored.get("instructions")
@@ -3706,6 +3731,12 @@ class APIServerAdapter(BasePlatformAdapter):
                             if isinstance(part, dict) and part.get("type") == "text"
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
+
+        if loaded_previous_response_history:
+            from agent.resume_history import sanitize_resumed_conversation_history
+            model_conversation_history = sanitize_resumed_conversation_history(conversation_history)
+        else:
+            model_conversation_history = list(conversation_history)
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
@@ -3796,7 +3827,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
                             user_message=user_message,
-                            conversation_history=conversation_history,
+                            conversation_history=model_conversation_history,
                             task_id=effective_task_id,
                         )
                     finally:

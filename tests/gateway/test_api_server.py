@@ -1763,7 +1763,11 @@ class TestResponsesEndpoint:
                 "session_id": "api-test-session",
             },
         )
-        full_agent_transcript = prior_history + [
+        model_history = [
+            {"role": "user", "content": "Read old file"},
+            {"role": "assistant", "content": "old"},
+        ]
+        full_agent_transcript = model_history + [
             {"role": "user", "content": "Read new file"},
             {
                 "role": "assistant",
@@ -1811,6 +1815,118 @@ class TestResponsesEndpoint:
         assert "call_new" in output_json
         assert "call_old" not in output_json
         assert "old.txt" not in output_json
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_sanitizes_model_history_but_preserves_stored_raw_transcript(self, adapter):
+        """Chained Responses must not feed prior raw tool transcripts back to the model."""
+        raw_prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"old.txt"}',
+                        },
+                    }
+                ],
+                "provider_metadata": {"debug": "PRIVATE_REASONING"},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_old",
+                "content": "RAW_TOOL_OUTPUT old secret",
+            },
+            {"role": "assistant", "content": "old result"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(raw_prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+        sanitized_prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {"role": "assistant", "content": "old result"},
+        ]
+        current_turn = [
+            {"role": "user", "content": "Read new file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_new",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"new.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_new",
+                "content": '{"content":"new"}',
+            },
+            {"role": "assistant", "content": "new result"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "new result",
+                        "messages": sanitized_prior_history + current_turn,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Read new file",
+                        "previous_response_id": "resp_prev",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["conversation_history"] == sanitized_prior_history
+        model_history_json = json.dumps(call_kwargs["conversation_history"])
+        assert "call_old" not in model_history_json
+        assert "RAW_TOOL_OUTPUT" not in model_history_json
+        assert "PRIVATE_REASONING" not in model_history_json
+
+        stored_history = adapter._response_store.get(data["id"])["conversation_history"]
+        assert stored_history == raw_prior_history + current_turn
+        stored_history_json = json.dumps(stored_history)
+        assert "call_old" in stored_history_json
+        assert "RAW_TOOL_OUTPUT" in stored_history_json
+
+    def test_build_response_history_does_not_duplicate_current_user_suffix(self):
+        prior_history = [{"role": "user", "content": "First"}]
+        current_turn = [
+            {"role": "user", "content": "Second"},
+            {"role": "assistant", "content": "Reply"},
+        ]
+
+        stored_history = APIServerAdapter._build_response_conversation_history(
+            prior_history,
+            "Second",
+            {"messages": list(current_turn)},
+            "Reply",
+        )
+
+        assert stored_history == prior_history + current_turn
+        assert stored_history.count({"role": "user", "content": "Second"}) == 1
 
     @pytest.mark.asyncio
     async def test_previous_response_id_preserves_session(self, adapter):
@@ -2245,6 +2361,119 @@ class TestResponsesStreaming:
         assert stored_history == expected_history
         assert stored_history.count(prior_history[0]) == 1
         assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
+
+    @pytest.mark.asyncio
+    async def test_streamed_previous_response_id_sanitizes_model_history_but_preserves_stored_raw_transcript(self, adapter):
+        raw_prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"old.txt"}',
+                        },
+                    }
+                ],
+                "provider_metadata": {"debug": "PRIVATE_REASONING"},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_old",
+                "content": "RAW_TOOL_OUTPUT old secret",
+            },
+            {"role": "assistant", "content": "old result"},
+        ]
+        adapter._response_store.put(
+            "resp_prev",
+            {
+                "response": {"id": "resp_prev", "status": "completed"},
+                "conversation_history": list(raw_prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+        sanitized_prior_history = [
+            {"role": "user", "content": "Read old file"},
+            {"role": "assistant", "content": "old result"},
+        ]
+        current_turn = [
+            {"role": "user", "content": "Read new file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_new",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"new.txt"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_new",
+                "content": '{"content":"new"}',
+            },
+            {"role": "assistant", "content": "new result"},
+        ]
+        captured = {}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                captured["conversation_history"] = kwargs["conversation_history"]
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("new result")
+                return (
+                    {
+                        "final_response": "new result",
+                        "messages": sanitized_prior_history + current_turn,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Read new file",
+                        "previous_response_id": "resp_prev",
+                        "stream": True,
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert captured["conversation_history"] == sanitized_prior_history
+        model_history_json = json.dumps(captured["conversation_history"])
+        assert "call_old" not in model_history_json
+        assert "RAW_TOOL_OUTPUT" not in model_history_json
+        assert "PRIVATE_REASONING" not in model_history_json
+
+        response_id = None
+        for line in body.splitlines():
+            if line.startswith("data: "):
+                try:
+                    payload = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "response.completed":
+                    response_id = payload["response"]["id"]
+                    break
+
+        assert response_id
+        stored_history = adapter._response_store.get(response_id)["conversation_history"]
+        assert stored_history == raw_prior_history + current_turn
+        stored_history_json = json.dumps(stored_history)
+        assert "call_old" in stored_history_json
+        assert "RAW_TOOL_OUTPUT" in stored_history_json
 
     @pytest.mark.asyncio
     async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
