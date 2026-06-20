@@ -288,8 +288,8 @@ class CLIAgentSetupMixin:
                     session_meta = resolved_meta
             restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
-                from agent.resume_history import sanitize_resumed_conversation_history
-                restored = sanitize_resumed_conversation_history(restored)
+                from agent.resume_history import model_history_for_resumed_session
+                restored = model_history_for_resumed_session(restored)
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
                 title_part = ""
@@ -478,8 +478,8 @@ class CLIAgentSetupMixin:
 
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
-            from agent.resume_history import sanitize_resumed_conversation_history
-            restored = sanitize_resumed_conversation_history(restored)
+            from agent.resume_history import model_history_for_resumed_session
+            restored = model_history_for_resumed_session(restored)
             self.conversation_history = restored
             msg_count = len([m for m in restored if m.get("role") == "user"])
             title_part = ""

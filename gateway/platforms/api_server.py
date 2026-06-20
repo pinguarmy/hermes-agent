@@ -2863,6 +2863,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
         # Precedence: explicit conversation_history > previous_response_id.
+        # Only server-owned previous_response_id history is sanitized here;
+        # direct conversation_history is treated as trusted model input from
+        # the client that provided it.
         conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -3688,6 +3691,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
+        # Only server-owned previous_response_id history is sanitized here;
+        # direct conversation_history is treated as trusted model input from
+        # the client that provided it.
         conversation_history: List[Dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:

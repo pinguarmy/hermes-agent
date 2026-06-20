@@ -1,4 +1,8 @@
-from agent.resume_history import sanitize_resumed_conversation_history
+from agent.resume_history import (
+    has_interrupted_tool_tail,
+    model_history_for_resumed_session,
+    sanitize_resumed_conversation_history,
+)
 
 
 def test_sanitize_resumed_history_strips_tool_and_reasoning_payloads():
@@ -63,3 +67,37 @@ def test_sanitize_resumed_history_keeps_visible_dialogue_only():
         {"role": "user", "content": "question"},
         {"role": "assistant", "content": "I will check."},
     ]
+
+
+def test_model_history_for_resumed_session_sanitizes_finished_tool_turn():
+    history = [
+        {"role": "user", "content": "question"},
+        {
+            "role": "assistant",
+            "content": "I will check.",
+            "tool_calls": [{"id": "call_1", "function": {"name": "terminal"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "secret"},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    assert has_interrupted_tool_tail(history) is False
+    assert model_history_for_resumed_session(history) == [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "I will check.\n\nDone."},
+    ]
+
+
+def test_model_history_for_resumed_session_preserves_interrupted_tool_tail():
+    history = [
+        {"role": "user", "content": "question"},
+        {
+            "role": "assistant",
+            "content": "I will check.",
+            "tool_calls": [{"id": "call_1", "function": {"name": "terminal"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "secret"},
+    ]
+
+    assert has_interrupted_tool_tail(history) is True
+    assert model_history_for_resumed_session(history) == history

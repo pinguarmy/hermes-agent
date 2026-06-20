@@ -4085,6 +4085,82 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_preserves_interrupted_tool_tail_for_model(monkeypatch):
+    """An unfinished assistant->tool tail must survive TUI resume replay."""
+    seen = {}
+    raw_history = [
+        {"role": "user", "content": "inspect the file"},
+        {
+            "role": "assistant",
+            "content": "I will inspect it.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"a.txt"}',
+                    },
+                }
+            ],
+            "provider_metadata": {"debug": "PRIVATE_REASONING"},
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "RAW_TOOL_OUTPUT",
+        },
+    ]
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent(), history=raw_history)
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "continue"},
+            }
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["history"] == raw_history
+        assert "RAW_TOOL_OUTPUT" in repr(seen["history"])
+        assert "call_1" in repr(seen["history"])
+        assert server._sessions["sid"]["history"][-1] == {
+            "role": "assistant",
+            "content": "reply",
+        }
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     """Desktop user-message edits should restart the turn from the edited user."""
 

@@ -83,3 +83,35 @@ def sanitize_resumed_conversation_history(
         sanitized.append(assistant_msg)
 
     return sanitized
+
+
+def has_interrupted_tool_tail(history: Iterable[Dict[str, Any]] | None) -> bool:
+    """Return True when a stored transcript ends before a tool result was consumed."""
+    if not history:
+        return False
+
+    last_message: Dict[str, Any] | None = None
+    for msg in history:
+        if isinstance(msg, dict):
+            last_message = msg
+
+    return bool(last_message and last_message.get("role") == "tool")
+
+
+def model_history_for_resumed_session(
+    history: Iterable[Dict[str, Any]] | None,
+) -> List[Dict[str, Any]]:
+    """Return model-facing history for a resumed session.
+
+    Ordinary resume boundaries strip raw tool calls/results and private
+    provider metadata before the next model turn. If the transcript ends in a
+    tool result, the previous turn was interrupted before the assistant could
+    process that result, so the raw assistant->tool sequence must remain intact.
+    """
+    if not history:
+        return []
+
+    restored = list(history)
+    if has_interrupted_tool_tail(restored):
+        return restored
+    return sanitize_resumed_conversation_history(restored)

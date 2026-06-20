@@ -123,9 +123,9 @@ def _merge_resumed_acp_result_messages(
 
     logger.debug(
         "ACP resumed result is shorter than the model-history prefix; "
-        "preserving raw restored history without guessing a turn delta"
+        "preserving raw restored history and appending returned messages"
     )
-    return raw_prefix
+    return raw_prefix + result_messages
 
 
 def _resumed_acp_history_for_save(

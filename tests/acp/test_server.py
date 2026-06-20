@@ -1203,7 +1203,7 @@ class TestPrompt:
         assert merged == raw_history + result_messages[len(model_history) :]
         assert {"role": "user", "content": "raw normalized"} not in merged
 
-    def test_resumed_acp_merge_preserves_raw_history_when_delta_is_unaligned(self):
+    def test_resumed_acp_merge_appends_returned_messages_when_delta_is_unaligned(self):
         raw_history = [
             {"role": "user", "content": "raw", "message_id": "client-msg-1"},
             {"role": "tool", "tool_call_id": "call_1", "content": "raw tool"},
@@ -1220,8 +1220,8 @@ class TestPrompt:
             result_messages=result_messages,
         )
 
-        assert merged == raw_history
-        assert {"role": "assistant", "content": "compressed summary"} not in merged
+        assert merged == raw_history + result_messages
+        assert {"role": "assistant", "content": "compressed summary"} in merged
 
     @pytest.mark.asyncio
     async def test_resumed_prompt_exception_preserves_persisted_raw_history(self, tmp_path):
