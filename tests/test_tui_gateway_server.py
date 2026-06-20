@@ -4085,8 +4085,8 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
-def test_prompt_submit_preserves_interrupted_tool_tail_for_model(monkeypatch):
-    """An unfinished assistant->tool tail must survive TUI resume replay."""
+def test_prompt_submit_sanitizes_tool_tail_for_model(monkeypatch):
+    """Ordinary TUI resume must not replay raw assistant->tool tails."""
     seen = {}
     raw_history = [
         {"role": "user", "content": "inspect the file"},
@@ -4150,9 +4150,12 @@ def test_prompt_submit_preserves_interrupted_tool_tail_for_model(monkeypatch):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert seen["history"] == raw_history
-        assert "RAW_TOOL_OUTPUT" in repr(seen["history"])
-        assert "call_1" in repr(seen["history"])
+        assert seen["history"] == [
+            {"role": "user", "content": "inspect the file"},
+            {"role": "assistant", "content": "I will inspect it."},
+        ]
+        assert "RAW_TOOL_OUTPUT" not in repr(seen["history"])
+        assert "call_1" not in repr(seen["history"])
         assert server._sessions["sid"]["history"][-1] == {
             "role": "assistant",
             "content": "reply",

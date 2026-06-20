@@ -123,9 +123,16 @@ def _merge_resumed_acp_result_messages(
 
     logger.debug(
         "ACP resumed result is shorter than the model-history prefix; "
-        "preserving raw restored history and appending returned messages"
+        "preserving raw restored history and appending available new-turn messages"
     )
-    return raw_prefix + result_messages
+    new_turn: list[dict[str, Any]] = []
+    for msg in reversed(result_messages):
+        if not isinstance(msg, dict):
+            continue
+        new_turn.insert(0, msg)
+        if msg.get("role") == "user":
+            break
+    return raw_prefix + (new_turn or result_messages)
 
 
 def _resumed_acp_history_for_save(

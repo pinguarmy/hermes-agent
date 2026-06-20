@@ -1,5 +1,4 @@
 from agent.resume_history import (
-    has_interrupted_tool_tail,
     model_history_for_resumed_session,
     sanitize_resumed_conversation_history,
 )
@@ -81,14 +80,13 @@ def test_model_history_for_resumed_session_sanitizes_finished_tool_turn():
         {"role": "assistant", "content": "Done."},
     ]
 
-    assert has_interrupted_tool_tail(history) is False
     assert model_history_for_resumed_session(history) == [
         {"role": "user", "content": "question"},
         {"role": "assistant", "content": "I will check.\n\nDone."},
     ]
 
 
-def test_model_history_for_resumed_session_preserves_interrupted_tool_tail():
+def test_model_history_for_resumed_session_sanitizes_tool_tail():
     history = [
         {"role": "user", "content": "question"},
         {
@@ -99,5 +97,7 @@ def test_model_history_for_resumed_session_preserves_interrupted_tool_tail():
         {"role": "tool", "tool_call_id": "call_1", "content": "secret"},
     ]
 
-    assert has_interrupted_tool_tail(history) is True
-    assert model_history_for_resumed_session(history) == history
+    assert model_history_for_resumed_session(history) == [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "I will check."},
+    ]

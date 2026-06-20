@@ -42,7 +42,7 @@ class _CLI(CLIAgentSetupMixin):
         pass
 
 
-def test_cli_preload_resume_preserves_interrupted_tool_tail(monkeypatch):
+def test_cli_preload_resume_sanitizes_tool_tail(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "cli",
@@ -60,7 +60,10 @@ def test_cli_preload_resume_preserves_interrupted_tool_tail(monkeypatch):
     cli = _CLI(raw_history)
 
     assert cli._preload_resumed_session() is True
-    assert cli.conversation_history == raw_history
+    assert cli.conversation_history == [
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": "I will inspect it."},
+    ]
 
 
 def test_cli_preload_resume_sanitizes_finished_tool_turn(monkeypatch):
